@@ -41,6 +41,11 @@ def register_command(name: str, description: str, handler: Any) -> None:
     _commands[name] = SlashCommand(name=name, description=description, handler=handler)
 
 
+def unregister_command(name: str) -> None:
+    """Remove a slash command if it exists."""
+    _commands.pop(name, None)
+
+
 def get_command(name: str) -> SlashCommand | None:
     """Look up a slash command by name."""
     return _commands.get(name)
@@ -114,6 +119,21 @@ def _cost_handler(**kwargs: Any) -> str:
     return f"Session usage: {total_in} input tokens, {total_out} output tokens"
 
 
+def _skills_handler(**_kwargs: Any) -> str:
+    """List loaded skills."""
+    return "__SKILLS__"
+
+
+def _reload_skills_handler(**_kwargs: Any) -> str:
+    """Reload skills from disk."""
+    return "__RELOAD_SKILLS__"
+
+
+def _run_skill_generator_handler(**_kwargs: Any) -> str:
+    """Inject the skill generator prompt."""
+    return "__RUN_SKILL_GENERATOR__"
+
+
 # 百炼兼容模型前缀——这些模型走阿里云百炼 Anthropic 兼容接口
 DASHSCOPE_MODELS = {"qwen3-max", "glm-5", "kimi-k2.5", "deepseek-v4-flash"}
 
@@ -176,3 +196,10 @@ register_command("clear", "Clear conversation history", _clear_handler)
 register_command("compact", "Compact conversation context", _compact_handler)
 register_command("cost", "Show token usage for this session", _cost_handler)
 register_command("model", "Show or change the current model", _model_handler)
+register_command("skills", "List available skills", _skills_handler)
+register_command("reload-skills", "Pick up skills added or changed on disk during this session", _reload_skills_handler)
+register_command(
+    "run-skill-generator",
+    "Author or improve a per-project skill for this app",
+    _run_skill_generator_handler,
+)

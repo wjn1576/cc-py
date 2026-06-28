@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -54,8 +55,24 @@ class WebSearchTool(Tool):
                     },
                     "freshness": {
                         "type": "string",
-                        "description": "Freshness filter: noLimit, oneDay, oneWeek, oneMonth, oneYear",
+                        "description": (
+                            "Freshness filter: noLimit, oneDay, oneWeek, oneMonth, oneYear, "
+                            "YYYY-MM-DD, or YYYY-MM-DD..YYYY-MM-DD"
+                        ),
                         "default": "noLimit",
+                    },
+                    "summary": {
+                        "type": "boolean",
+                        "description": "Whether to request text summaries for search results",
+                        "default": True,
+                    },
+                    "include": {
+                        "type": "string",
+                        "description": "Limit search to domains/subdomains, separated by | or comma",
+                    },
+                    "exclude": {
+                        "type": "string",
+                        "description": "Exclude domains/subdomains, separated by | or comma",
                     },
                 },
                 "required": ["query"],
@@ -85,10 +102,16 @@ class WebSearchTool(Tool):
         freshness = str(tool_input.get("freshness") or "noLimit")
         payload = {
             "query": query,
-            "summary": True,
+            "summary": bool(tool_input.get("summary", True)),
             "freshness": freshness,
             "count": max_results,
         }
+        include = str(tool_input.get("include") or "").strip()
+        exclude = str(tool_input.get("exclude") or "").strip()
+        if include:
+            payload["include"] = include
+        if exclude:
+            payload["exclude"] = exclude
 
         try:
             async with httpx.AsyncClient(timeout=30) as client:
@@ -144,17 +167,55 @@ def _format_bocha_results(*, query: str, data: dict[str, Any], max_results: int)
         url = item.get("url") or item.get("displayUrl") or ""
         site_name = item.get("siteName") or item.get("site") or ""
         snippet = item.get("summary") or item.get("snippet") or item.get("description") or ""
-        published = item.get("datePublished") or item.get("dateLastCrawled") or ""
+        date_label, date_value = _extract_result_date(item)
 
         lines.append(f"{idx}. {title}")
         if url:
             lines.append(f"   URL: {url}")
         if site_name:
             lines.append(f"   Site: {site_name}")
-        if published:
-            lines.append(f"   Date: {published}")
+        if date_value:
+            lines.append(f"   {date_label}: {date_value}")
         if snippet:
             lines.append(f"   Summary: {snippet}")
         lines.append("")
 
     return "\n".join(lines).strip()
+
+
+def _extract_result_date(item: dict[str, Any]) -> tuple[str, str]:
+    """Prefer page publish time; fall back to Bocha crawl time with timezone note."""
+    published = item.get("datePublished")
+    if published:
+        return "Published", str(published)
+
+    crawled = item.get("dateLastCrawled")
+    if not crawled:
+        return "Date", ""
+
+    crawled_text = str(crawled)
+    normalized = _normalize_bocha_crawled_time(crawled_text)
+    if normalized != crawled_text:
+        return "Last crawled", f"{normalized} (UTC+8, normalized from Bocha dateLastCrawled)"
+    return "Last crawled", crawled_text
+
+
+def _normalize_bocha_crawled_time(value: str) -> str:
+    """Normalize Bocha dateLastCrawled values that use Z for UTC+8 wall time.
+
+    Bocha documents note that dateLastCrawled may be returned like
+    2025-02-23T08:18:30Z while semantically meaning UTC+8 local time.
+    When that pattern appears, present it explicitly as +08:00.
+    """
+    if not value.endswith("Z"):
+        return value
+
+    try:
+        naive = datetime.fromisoformat(value[:-1])
+    except ValueError:
+        return value
+
+    beijing = timezone(timedelta(hours=8))
+    local_time = naive.replace(tzinfo=beijing)
+    utc_time = local_time.astimezone(UTC)
+    return f"{local_time.isoformat(timespec='seconds')} / {utc_time.isoformat(timespec='seconds')}"

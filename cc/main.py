@@ -39,7 +39,10 @@ import os
 import sys
 import time
 from collections.abc import AsyncIterator  # noqa: TC003
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+from uuid import uuid4
 
 import click
 
@@ -72,6 +75,21 @@ from cc.tools.grep_tool.grep_tool import GrepTool
 from cc.ui.renderer import ACCENT, APP_NAME, console, render_event, set_display_cwd
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RuntimeContext:
+    """Runtime objects shared by REPL and TUI frontends."""
+
+    cwd: str
+    env: dict[str, str]
+    engine: QueryEngine
+    messages: list[Message]
+    skills: list[Any]
+    extraction_coord: Any
+    session_id: str
+    claude_md: str | None
+    notices: list[str] = field(default_factory=list)
 
 
 def _build_registry(
@@ -530,6 +548,191 @@ def _build_engine(
     return engine
 
 
+def _register_skills_as_commands(skills: list[Any]) -> None:
+    """Expose loaded skills as slash commands."""
+    if not skills:
+        return
+
+    from cc.commands.registry import register_command
+
+    for skill in skills:
+        _name = skill.name
+
+        def _make_skill_handler(name: str) -> object:
+            def handler(**_kwargs: object) -> str:
+                return f"__SKILL__{name}"
+            return handler
+
+        register_command(skill.name, skill.description, _make_skill_handler(_name))
+
+
+def _unregister_skill_commands(skills: list[Any]) -> None:
+    """Remove slash commands that were created from skills."""
+    if not skills:
+        return
+
+    from cc.commands.registry import unregister_command
+
+    for skill in skills:
+        unregister_command(skill.name)
+
+
+def format_skills_list(skills: list[Any]) -> str:
+    """Return a displayable list of currently loaded skills."""
+    if not skills:
+        return (
+            "No skills loaded.\n\n"
+            "Add project skills in .claude/skills/*.md or user skills in ~/.claude/skills/*.md, "
+            "then run /reload-skills."
+        )
+
+    lines = ["Available skills:"]
+    for skill in sorted(skills, key=lambda s: s.name.lower()):
+        lines.append(f"/{skill.name} - {skill.description}")
+    return "\n".join(lines)
+
+
+def reload_runtime_skills(runtime: RuntimeContext) -> str:
+    """Reload skills from disk and update both slash commands and SkillTool."""
+    old_skills = list(runtime.skills)
+    new_skills = load_skills(runtime.cwd)
+
+    _unregister_skill_commands(old_skills)
+    _register_skills_as_commands(new_skills)
+    runtime.skills = new_skills
+
+    from cc.tools.skill.skill_tool import SKILL_TOOL_NAME, SkillTool
+
+    skill_tool = runtime.engine.registry.get(SKILL_TOOL_NAME)
+    if isinstance(skill_tool, SkillTool):
+        skill_tool.set_skills(new_skills)
+
+    return f"Reloaded {len(new_skills)} skill(s).\n\n{format_skills_list(new_skills)}"
+
+
+def build_skill_generator_prompt(cwd: str) -> str:
+    """Prompt that asks the agent to author or improve a project skill."""
+    return f"""You are helping author or improve a cc-py project skill for this repository.
+
+Goal:
+- Create or improve one useful project skill under `.claude/skills/`.
+- Prefer a small, focused Markdown skill that helps future agents work better in this repo.
+
+Current project:
+{cwd}
+
+Skill format supported by this project:
+```md
+---
+name: short-command-name
+description: One sentence shown in /skills and slash autocomplete
+---
+
+Skill instructions go here.
+```
+
+Rules:
+1. Inspect the repository before writing a skill. Learn the stack, commands, tests, conventions, and common workflows.
+2. If `.claude/skills/` does not exist, create it.
+3. Choose a skill name that is a stable slash command, using lowercase words separated by hyphens.
+4. Keep the skill focused. It should teach an agent how to do one recurring task well.
+5. Include exact commands only when they are true for this repo. For tests, prefer the project's documented conda command style when relevant.
+6. Do not include secrets, local API keys, or machine-specific private paths unless the skill truly requires a configurable placeholder.
+7. After writing or updating the skill, summarize what changed and remind the user to run `/reload-skills`.
+
+Suggested skill ideas if the user has not specified one:
+- project-dev: how to set up, run, test, and verify this repo
+- cc-architecture-study: how to study Claude Code architecture ideas in this repo
+- tui-workflow: how to work on the Textual TUI safely
+- release-check: checks before committing or pushing
+"""
+
+
+async def build_runtime(
+    *,
+    model: str,
+    cwd: str,
+    resume_id: str | None = None,
+    is_interactive: bool = True,
+) -> RuntimeContext:
+    """Build runtime dependencies shared by CLI/REPL and TUI frontends."""
+    env = _load_env(cwd)
+    client = _create_client_for_model(model, env)
+    if client is None:
+        sys.exit(1)
+
+    engine = _build_engine(client, model, cwd, is_interactive=is_interactive, env=env)
+    await _connect_mcp_servers(cwd, engine.registry)
+
+    skills = load_skills(cwd)
+    _register_skills_as_commands(skills)
+
+    messages: list[Message] = engine.messages
+    notices: list[str] = []
+
+    if resume_id:
+        from cc.session.storage import load_session, load_task_snapshot
+
+        loaded = load_session(resume_id)
+        if loaded:
+            from cc.session.recovery import validate_transcript
+
+            repaired = validate_transcript(loaded)
+            messages.extend(repaired)
+
+            task_snap = load_task_snapshot(resume_id)
+            if task_snap and hasattr(engine, '_task_registry'):
+                engine._task_registry.restore(task_snap)
+
+            notices.append(f"Resumed session {resume_id} ({len(messages)} messages)")
+        else:
+            notices.append(f"Session {resume_id} not found, starting fresh.")
+
+    from cc.memory.extractor import ExtractionCoordinator
+
+    return RuntimeContext(
+        cwd=cwd,
+        env=env,
+        engine=engine,
+        messages=messages,
+        skills=skills,
+        extraction_coord=ExtractionCoordinator(),
+        session_id=resume_id or str(uuid4())[:8],
+        claude_md=load_claude_md(cwd),
+        notices=notices,
+    )
+
+
+async def poll_team_inbox(engine: QueryEngine, messages: list[Message]) -> list[str]:
+    """Poll teammate mailbox and inject notifications into the transcript."""
+    notices: list[str] = []
+    if not (hasattr(engine, '_team_context') and engine._team_context.is_active):
+        return notices
+
+    from cc.swarm.identity import TEAM_LEAD_NAME
+    from cc.swarm.mailbox import TeammateMailbox
+
+    try:
+        mailbox = TeammateMailbox(engine._team_context.team_name)
+        inbox = mailbox.receive(TEAM_LEAD_NAME)
+        if inbox:
+            mailbox.mark_all_read(TEAM_LEAD_NAME)
+            for msg in inbox:
+                notification = f"<task-notification>\n[From {msg.from_name}]: {msg.text}\n</task-notification>"
+                messages.append(UserMessage(content=notification))
+                notices.append(f"Received message from {msg.from_name}")
+    except Exception as e:
+        logger.debug("Inbox poll failed: %s", e)
+
+    return notices
+
+
+def save_runtime_session(engine: QueryEngine, session_id: str, messages: list[Message]) -> None:
+    """Persist transcript and task state."""
+    task_snap = engine._task_registry.snapshot() if hasattr(engine, '_task_registry') else None
+    save_session(session_id, messages, task_snapshot=task_snap)
+
+
 def _read_multiline_input() -> str:
     """Read user input with multi-line support.
 
@@ -634,76 +837,24 @@ async def _run_repl(model: str, cwd: str, resume_id: str | None = None) -> None:
     【退出】
       - 用户输入 EOF（Ctrl+D）时退出
     """
-    env = _load_env(cwd)
-    client = _create_client_for_model(model, env)
-    if client is None:
-        sys.exit(1)
-
-    engine = _build_engine(client, model, cwd, env=env)
-
-    # MCP
-    await _connect_mcp_servers(cwd, engine.registry)
-
-    # Skills — load and register as slash commands
-    skills = load_skills(cwd)
-    if skills:
-        from cc.commands.registry import register_command
-
-        for skill in skills:
-            _name = skill.name
-
-            def _make_skill_handler(name: str) -> object:
-                def handler(**_kwargs: object) -> str:
-                    return f"__SKILL__{name}"
-                return handler
-
-            register_command(skill.name, skill.description, _make_skill_handler(_name))
+    runtime = await build_runtime(model=model, cwd=cwd, resume_id=resume_id, is_interactive=True)
+    engine = runtime.engine
 
     # messages 是 engine 内部 transcript 的引用——同一个 list 对象
     # REPL 中对 messages 的操作（append/clear/extend）直接影响 engine 的状态
-    messages: list[Message] = engine.messages
+    messages: list[Message] = runtime.messages
     # _bg_tasks 持有后台 memory extraction 的 asyncio.Task 引用，防止被 GC 回收
     _bg_tasks: set[asyncio.Task[None]] = set()
-
-    # ExtractionCoordinator 替代了直接调用 extract_memories()
-    # 它内部维护增量计数（_last_extracted_count）和 coalescing 逻辑：
-    # 如果上一次提取还在运行，新请求会被合并（设置 dirty 标记），等上一次完成后自动重跑
-    from cc.memory.extractor import ExtractionCoordinator
-
-    extraction_coord = ExtractionCoordinator()
-
-    # === Resume 恢复流程 ===
-    # 从 ~/.claude/sessions/<session_id>.jsonl 加载旧 transcript
-    # 必须做 validate_transcript() 修复，因为上次可能是中途崩溃退出的，
-    # transcript 末尾可能有 orphaned tool_use（没有配对的 tool_result）
-    # → 不修复的话 API 调用会报协议错误
-    if resume_id:
-        from cc.session.storage import load_session, load_task_snapshot
-
-        loaded = load_session(resume_id)
-        if loaded:
-            from cc.session.recovery import validate_transcript
-
-            repaired = validate_transcript(loaded)
-            messages.extend(repaired)
-
-            # 恢复 TaskRegistry 快照（后台任务状态）
-            # 非终态任务（RUNNING/PENDING）会被标记为 KILLED，因为对应的 asyncio.Task 已丢失
-            task_snap = load_task_snapshot(resume_id)
-            if task_snap and hasattr(engine, '_task_registry'):
-                engine._task_registry.restore(task_snap)
-
-            console.print(f"[dim]Resumed session {resume_id} ({len(messages)} messages)[/]")
-        else:
-            console.print(f"[yellow]Session {resume_id} not found, starting fresh.[/]")
-
-    from uuid import uuid4
 
     from cc.ui.renderer import print_welcome
 
     print_welcome(model=engine.model, cwd=cwd)
-    session_id = resume_id or str(uuid4())[:8]
-    claude_md = load_claude_md(cwd)
+    for notice in runtime.notices:
+        console.print(f"[dim]{notice}[/]")
+    session_id = runtime.session_id
+    claude_md = runtime.claude_md
+    skills = runtime.skills
+    extraction_coord = runtime.extraction_coord
 
     # ==========================================
     # === REPL 主循环开始 ===
@@ -780,6 +931,17 @@ async def _run_repl(model: str, cwd: str, resume_id: str | None = None) -> None:
                 else:
                     console.print(f"[red]Skill not found: {skill_name}[/]")
                     continue
+            elif result == "__SKILLS__":
+                console.print(format_skills_list(skills))
+                continue
+            elif result == "__RELOAD_SKILLS__":
+                console.print(reload_runtime_skills(runtime))
+                skills = runtime.skills
+                continue
+            elif result == "__RUN_SKILL_GENERATOR__":
+                generator_prompt = build_skill_generator_prompt(cwd)
+                messages.append(UserMessage(content=generator_prompt))
+                console.print("[dim]Skill generator prompt activated.[/]")
             else:
                 console.print(result)
                 continue
@@ -800,21 +962,8 @@ async def _run_repl(model: str, cwd: str, resume_id: str | None = None) -> None:
         # 在进入 query_loop 之前，检查是否有 teammate 发来的消息
         # 如果有，把它们包装成 <task-notification> 格式的 UserMessage 注入 transcript
         # 这样模型在下一轮就能看到 teammate 的汇报
-        if hasattr(engine, '_team_context') and engine._team_context.is_active:
-            from cc.swarm.identity import TEAM_LEAD_NAME
-            from cc.swarm.mailbox import TeammateMailbox
-
-            try:
-                mailbox = TeammateMailbox(engine._team_context.team_name)
-                inbox = mailbox.receive(TEAM_LEAD_NAME)
-                if inbox:
-                    mailbox.mark_all_read(TEAM_LEAD_NAME)
-                    for msg in inbox:
-                        notification = f"<task-notification>\n[From {msg.from_name}]: {msg.text}\n</task-notification>"
-                        messages.append(UserMessage(content=notification))
-                        console.print(f"[dim]Received message from {msg.from_name}[/]")
-            except Exception as e:
-                logger.debug("Inbox poll failed: %s", e)
+        for notice in await poll_team_inbox(engine, messages):
+            console.print(f"[dim]{notice}[/]")
 
         # --- D. 驱动内核 ---
         # engine.run_turn() 内部调用 query_loop()，这是状态机运转的入口
@@ -835,8 +984,7 @@ async def _run_repl(model: str, cwd: str, resume_id: str | None = None) -> None:
 
         # E1. 持久化 transcript + task 状态
         # 每轮结束都存一次，这样即使下次崩溃也能 resume 恢复
-        task_snap = engine._task_registry.snapshot() if hasattr(engine, '_task_registry') else None
-        save_session(session_id, messages, task_snapshot=task_snap)
+        save_runtime_session(engine, session_id, messages)
 
         # E2. 后台 memory extraction
         # 用一个低配的 call_model（max_tokens=1024）去扫描最近的对话，
@@ -867,7 +1015,10 @@ async def _run_repl(model: str, cwd: str, resume_id: str | None = None) -> None:
 # CLI 入口
 # ===========================================================================
 
-@click.command()
+@click.group(
+    invoke_without_command=True,
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
 @click.option("-p", "--print", "print_mode", is_flag=True, help="Non-interactive mode")
 @click.option("--model", default=DEFAULT_MODEL, show_default=True, help="Model to use")
 @click.option("--verbose", is_flag=True, help="Verbose output")
@@ -879,20 +1030,19 @@ async def _run_repl(model: str, cwd: str, resume_id: str | None = None) -> None:
     default=None,
     help="Working directory for tools, memory, .env, CLAUDE.md, and MCP config",
 )
-@click.argument("prompt", required=False)
+@click.pass_context
 def main(
+    ctx: click.Context,
     print_mode: bool,
     model: str,
     verbose: bool,
     resume_id: str | None,
     cwd_option: Path | None,
-    prompt: str | None,
 ) -> None:
-    """cc-py -- Claude Code architecture learning CLI in Python.
+    """cc-py: Claude Code architecture learning CLI.
 
-    两种运行模式：
-      1. print mode (-p): echo "prompt" | python -m cc -p → 单次输出后退出
-      2. REPL mode (默认): 交互式对话循环，支持 /command、resume、memory
+    Run `cc` for the classic REPL, `cc -p` for print mode, or `cc tui`
+    for the full-screen Textual interface.
     """
     if verbose:
         logging.basicConfig(level=logging.DEBUG)
@@ -900,6 +1050,19 @@ def main(
     cwd = (cwd_option or Path.cwd()).expanduser().resolve()
     os.chdir(cwd)
     set_display_cwd(str(cwd))
+
+    ctx.ensure_object(dict)
+    ctx.obj.update({
+        "model": model,
+        "verbose": verbose,
+        "resume_id": resume_id,
+        "cwd": str(cwd),
+    })
+
+    if ctx.invoked_subcommand is not None:
+        return
+
+    prompt = " ".join(ctx.args).strip() or None
 
     if print_mode:
         if not prompt:
@@ -910,6 +1073,21 @@ def main(
         asyncio.run(_run_print_mode(prompt, model, str(cwd)))
     else:
         asyncio.run(_run_repl(model, str(cwd), resume_id=resume_id))
+
+
+@main.command("tui")
+@click.pass_context
+def tui_command(ctx: click.Context) -> None:
+    """Launch the Textual full-screen TUI."""
+    opts = ctx.ensure_object(dict)
+    from cc.tui.app import CCPyTuiApp
+
+    app = CCPyTuiApp(
+        model=str(opts["model"]),
+        cwd=str(opts["cwd"]),
+        resume_id=opts.get("resume_id"),
+    )
+    app.run()
 
 
 if __name__ == "__main__":

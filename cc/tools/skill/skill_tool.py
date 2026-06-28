@@ -34,6 +34,10 @@ class SkillTool(Tool):
         # 可用技能列表在启动时注入，通常从 skills/ 目录和用户配置中加载
         self._skills = skills
 
+    def set_skills(self, skills: list[Skill]) -> None:
+        """Replace the loaded skills without rebuilding the whole runtime."""
+        self._skills = skills
+
     def get_name(self) -> str:
         return SKILL_TOOL_NAME
 

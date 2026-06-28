@@ -168,6 +168,10 @@ python -m cc
 # 安装后可在任意目录直接启动
 cc
 
+# Textual 全屏 TUI 模式
+cc tui
+cc --cwd E:\your-project tui
+
 # 默认使用百炼 qwen3-max，也可以指定其他百炼模型
 python -m cc --model qwen3-max
 python -m cc --model deepseek-v4-flash

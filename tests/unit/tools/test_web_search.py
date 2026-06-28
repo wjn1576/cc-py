@@ -65,6 +65,51 @@ class TestWebSearchTool:
         assert "DeepSeek timeline summary." in result.content
 
     @pytest.mark.asyncio
+    async def test_search_normalizes_bocha_crawled_time(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class _FakeResponse:
+            status_code = 200
+            text = ""
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {
+                    "data": {
+                        "webPages": {
+                            "value": [
+                                {
+                                    "name": "Fresh result",
+                                    "url": "https://example.com/fresh",
+                                    "dateLastCrawled": "2025-02-23T08:18:30Z",
+                                }
+                            ]
+                        }
+                    }
+                }
+
+        class _FakeClient:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            async def __aenter__(self) -> "_FakeClient":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+            async def post(self, *args: object, **kwargs: object) -> _FakeResponse:
+                return _FakeResponse()
+
+        monkeypatch.setattr(web_search_tool.httpx, "AsyncClient", _FakeClient)
+        tool = WebSearchTool(api_key="bocha-test-key")
+        result = await tool.execute({"query": "fresh"})
+
+        assert not result.is_error
+        assert "Last crawled: 2025-02-23T08:18:30+08:00" in result.content
+        assert "2025-02-23T00:18:30+00:00" in result.content
+
+    @pytest.mark.asyncio
     async def test_empty_query_error(self) -> None:
         tool = WebSearchTool()
         result = await tool.execute({"query": ""})
@@ -80,6 +125,9 @@ class TestWebSearchTool:
         assert "query" in schema.input_schema["properties"]
         assert "max_results" in schema.input_schema["properties"]
         assert "freshness" in schema.input_schema["properties"]
+        assert "summary" in schema.input_schema["properties"]
+        assert "include" in schema.input_schema["properties"]
+        assert "exclude" in schema.input_schema["properties"]
         assert "query" in schema.input_schema["required"]
 
     @pytest.mark.asyncio

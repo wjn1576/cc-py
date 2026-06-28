@@ -79,3 +79,15 @@ class TestSkillTool:
         result = await tool.execute({"skill": "anything"})
         assert result.is_error
         assert "(none)" in result.content
+
+    @pytest.mark.asyncio
+    async def test_set_skills_replaces_loaded_skills(self, sample_skills: list[Skill]) -> None:
+        tool = SkillTool(skills=sample_skills)
+        tool.set_skills([Skill(name="tui", description="TUI work", prompt="Improve the TUI.")])
+
+        old_result = await tool.execute({"skill": "commit"})
+        new_result = await tool.execute({"skill": "tui"})
+
+        assert old_result.is_error
+        assert not new_result.is_error
+        assert "Improve the TUI." in new_result.content

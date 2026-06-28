@@ -19,6 +19,12 @@ class TestComputeEnvInfo:
         info = compute_env_info("/tmp", "test-model")
         assert "Platform" in info
 
+    def test_contains_current_time(self) -> None:
+        info = compute_env_info("/tmp", "test-model")
+        assert "current local time" in info
+        assert "current UTC time" in info
+        assert "relative dates" in info
+
 
 class TestBuildSystemPrompt:
     def test_returns_list_of_strings(self) -> None:

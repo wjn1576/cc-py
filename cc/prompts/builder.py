@@ -57,8 +57,12 @@ def compute_env_info(
     except Exception:
         uname_sr = "Unknown"
 
-    # 使用 UTC 时间避免时区问题
-    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    # 同时提供本地时间和 UTC 时间。模型本身不知道真实时间，
+    # 所以 runtime 必须把“现在”作为动态环境信息注入。
+    local_now = datetime.now().astimezone()
+    utc_now = datetime.now(UTC)
+    local_time = local_now.isoformat(timespec="seconds")
+    utc_time = utc_now.isoformat(timespec="seconds")
 
     return f"""# Environment
 You have been invoked in the following environment:
@@ -68,7 +72,9 @@ You have been invoked in the following environment:
  - Shell: {shell_name}
  - OS Version: {uname_sr}
  - You are powered by the model {model}.
- - The current date is {today}."""
+ - The current local time is {local_time}.
+ - The current UTC time is {utc_time}.
+ - Treat relative dates like "today", "yesterday", "tomorrow", "this week", and "latest" relative to the current local time above. When precision matters, state absolute dates and times with timezone."""
 
 
 def build_system_prompt(
