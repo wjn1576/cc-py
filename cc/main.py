@@ -74,7 +74,12 @@ from cc.ui.renderer import ACCENT, APP_NAME, console, render_event, set_display_
 logger = logging.getLogger(__name__)
 
 
-def _build_registry(cwd: str, call_model_factory: object | None = None, model: str = "") -> ToolRegistry:
+def _build_registry(
+    cwd: str,
+    call_model_factory: object | None = None,
+    model: str = "",
+    env: dict[str, str] | None = None,
+) -> ToolRegistry:
     """Build the default tool registry with all tools.
 
     === 工具注册策略 ===
@@ -129,7 +134,8 @@ def _build_registry(cwd: str, call_model_factory: object | None = None, model: s
 
     from cc.tools.web_search.web_search_tool import WebSearchTool
 
-    registry.register(WebSearchTool())
+    env = env or {}
+    registry.register(WebSearchTool(api_key=env.get("BOCHA_API_KEY") or env.get("BOCHAAI_API_KEY")))
 
     from cc.tools.notebook.notebook_edit_tool import NotebookEditTool
 
@@ -222,7 +228,7 @@ def _load_env(cwd: str | None = None) -> dict[str, str]:
     """Load config from environment variables, package .env, and cwd .env.
 
     Priority: environment variables > cwd .env > package .env.
-    Supported keys: ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, DASHSCOPE_API_KEY.
+    Supported keys: ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, DASHSCOPE_API_KEY, BOCHA_API_KEY.
     """
     result: dict[str, str] = {}
 
@@ -241,6 +247,8 @@ def _load_env(cwd: str | None = None) -> dict[str, str]:
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_BASE_URL",
         "DASHSCOPE_API_KEY",
+        "BOCHA_API_KEY",
+        "BOCHAAI_API_KEY",
     ):
         val = os.environ.get(key)
         if val:
@@ -379,6 +387,7 @@ def _build_engine(
     cwd: str,
     *,
     is_interactive: bool = True,
+    env: dict[str, str] | None = None,
 ) -> QueryEngine:
     """Build a QueryEngine with all runtime dependencies wired.
 
@@ -457,7 +466,7 @@ def _build_engine(
         return _make_call_model(client, m or model, max_tokens)
 
     # === Step 6: 工具注册（第一遍）===
-    registry = _build_registry(cwd, call_model_factory=_factory, model=model)
+    registry = _build_registry(cwd, call_model_factory=_factory, model=model, env=env)
 
     # === Step 7: 二次布线 ===
     # 以下代码用完整版工具实例覆盖 _build_registry() 中注册的骨架版
@@ -582,7 +591,7 @@ async def _run_print_mode(prompt: str, model: str, cwd: str) -> None:
     if client is None:
         sys.exit(1)
 
-    engine = _build_engine(client, model, cwd, is_interactive=False)
+    engine = _build_engine(client, model, cwd, is_interactive=False, env=env)
 
     # MCP
     await _connect_mcp_servers(cwd, engine.registry)
@@ -630,7 +639,7 @@ async def _run_repl(model: str, cwd: str, resume_id: str | None = None) -> None:
     if client is None:
         sys.exit(1)
 
-    engine = _build_engine(client, model, cwd)
+    engine = _build_engine(client, model, cwd, env=env)
 
     # MCP
     await _connect_mcp_servers(cwd, engine.registry)

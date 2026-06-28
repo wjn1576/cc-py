@@ -149,6 +149,16 @@ python -m cc --model claude-sonnet-4-20250514
 > /model 4
 ```
 
+### 联网搜索
+
+`WebSearch` 工具使用博查 Web Search API。需要联网搜索时，在你运行 `cc` 的项目目录 `.env` 中配置：
+
+```env
+BOCHA_API_KEY=your-bocha-api-key
+```
+
+`.env` 已被 `.gitignore` 忽略，适合存放本地 API Key，不要把真实密钥写进 README 或提交到仓库。
+
 ## CLI 用法
 
 ```powershell
