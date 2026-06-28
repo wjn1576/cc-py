@@ -18,7 +18,7 @@ class TestCheckPermission:
         assert check_permission(PermissionMode.BYPASS, "anything") == PermissionDecision.ALLOW
 
     def test_read_only_always_allowed(self) -> None:
-        for tool in ("Read", "Glob", "Grep", "TaskGet", "TaskList"):
+        for tool in ("Read", "Glob", "Grep", "TaskGet", "TaskList", "WebSearch", "WebFetch"):
             assert check_permission(PermissionMode.DEFAULT, tool) == PermissionDecision.ALLOW
 
     def test_edit_tools_allowed_in_accept_edits(self) -> None:
@@ -36,7 +36,6 @@ class TestCheckPermission:
     def test_unknown_tool_defaults_to_ask(self) -> None:
         """New/unknown tools should default to ASK, not ALLOW."""
         assert check_permission(PermissionMode.ACCEPT_EDITS, "FutureTool") == PermissionDecision.ASK
-        assert check_permission(PermissionMode.DEFAULT, "WebSearch") == PermissionDecision.ASK
         assert check_permission(PermissionMode.ACCEPT_EDITS, "TeamCreate") == PermissionDecision.ASK
         assert check_permission(PermissionMode.ACCEPT_EDITS, "SendMessage") == PermissionDecision.ASK
 

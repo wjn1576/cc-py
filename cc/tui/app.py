@@ -40,6 +40,7 @@ from cc.main import (
 )
 from cc.models.messages import Message, UserMessage
 from cc.session.history import HistoryEntry, add_to_history
+from cc.tui.pet import PixelPetWidget
 from cc.ui.renderer import ACCENT, APP_NAME
 
 
@@ -92,6 +93,17 @@ class CCPyTuiApp(App[None]):
         width: 30;
         height: 1fr;
         border-left: solid #333333;
+        padding: 0;
+    }
+
+    #pet {
+        height: auto;
+        content-align: center middle;
+        padding: 1 0 0 0;
+    }
+
+    #status {
+        height: 1fr;
         padding: 1;
         color: #cfcfcf;
     }
@@ -217,7 +229,9 @@ class CCPyTuiApp(App[None]):
         with Vertical():
             with Horizontal(id="main"):
                 yield VerticalScroll(id="log")
-                yield Static(id="sidebar")
+                with Vertical(id="sidebar"):
+                    yield PixelPetWidget(id="pet")
+                    yield Static(id="status")
             yield Static(id="command-palette")
             yield Input(placeholder="Ask cc-py, or type /help", id="prompt")
         yield Footer()
@@ -324,6 +338,7 @@ class CCPyTuiApp(App[None]):
         prompt = self.query_one("#prompt", Input)
         prompt.disabled = True
         self.status = "running"
+        self._set_pet_state("thinking")
         self._update_status()
         try:
             if user_input.startswith("/"):
@@ -351,6 +366,7 @@ class CCPyTuiApp(App[None]):
             self._after_turn()
         finally:
             self.status = "idle"
+            self._set_pet_state("idle")
             self._update_status()
             prompt.disabled = False
             prompt.focus()
@@ -490,12 +506,15 @@ class CCPyTuiApp(App[None]):
     def _render_event(self, event: Any) -> None:
         if isinstance(event, TextDelta):
             self._clear_activity()
+            self._set_pet_state("talking")
             self._append_assistant_text(event.text)
         elif isinstance(event, ThinkingDelta):
             self._clear_activity()
+            self._set_pet_state("thinking")
             self._write_dim(event.text)
         elif isinstance(event, ToolUseStart):
             self._clear_activity()
+            self._set_pet_state("working")
             self._finish_assistant_message()
             self.last_tool = event.tool_name
             self._update_status()
@@ -508,11 +527,14 @@ class CCPyTuiApp(App[None]):
             self._finish_assistant_message()
             preview = event.content[:300] if isinstance(event.content, str) else str(event.content)[:300]
             if event.is_error:
+                self._set_pet_state("error")
                 self._write_error(preview)
             else:
+                self._set_pet_state("success")
                 self._write_tool(preview, dim=True)
         elif isinstance(event, CompactOccurred):
             self._clear_activity()
+            self._set_pet_state("compact")
             self._finish_assistant_message()
             self._write_system("Context compacted.")
         elif isinstance(event, TurnComplete):
@@ -522,6 +544,7 @@ class CCPyTuiApp(App[None]):
             self._finish_activity()
         elif isinstance(event, ErrorEvent):
             self._clear_activity()
+            self._set_pet_state("error")
             self._finish_assistant_message()
             self._write_error(event.message)
             self._finish_activity(final_word="Stopped")
@@ -654,6 +677,12 @@ class CCPyTuiApp(App[None]):
     def _keep_prompt_focused(self) -> None:
         self._focus_prompt()
 
+    def _set_pet_state(self, state: str) -> None:
+        try:
+            self.query_one("#pet", PixelPetWidget).set_state(state)
+        except Exception:
+            return
+
     def _update_command_palette(self, raw_text: str) -> None:
         palette = self.query_one("#command-palette", Static)
         if not raw_text.startswith("/"):
@@ -716,4 +745,4 @@ class CCPyTuiApp(App[None]):
             "Ctrl+L clear\n"
             "F1 help"
         )
-        self.query_one("#sidebar", Static).update(status)
+        self.query_one("#status", Static).update(status)

@@ -172,6 +172,10 @@ cc
 cc tui
 cc --cwd E:\your-project tui
 
+# 可选：使用 Codex 风格像素宠物目录
+$env:CC_PY_PET_DIR="C:\Users\wjn\.codex\pets\ddo-zvzo-2"
+cc tui
+
 # 默认使用百炼 qwen3-max，也可以指定其他百炼模型
 python -m cc --model qwen3-max
 python -m cc --model deepseek-v4-flash

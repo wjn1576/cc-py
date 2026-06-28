@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # 只读工具白名单 —— 这些工具不会修改文件系统，在所有模式下都自动允许
 READ_ONLY_TOOLS = frozenset({
     "Read", "Glob", "Grep", "TaskGet", "TaskList", "ToolSearch", "Brief",
-    "TaskCreate", "TaskUpdate",
+    "TaskCreate", "TaskUpdate", "WebSearch", "WebFetch",
 })
 # 编辑工具集 —— 会修改文件但不执行命令，在 ACCEPT_EDITS 模式下自动允许
 EDIT_TOOLS = frozenset({

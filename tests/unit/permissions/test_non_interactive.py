@@ -40,7 +40,14 @@ class TestNonInteractiveSemantics:
         """Teammates cannot prompt — same as background."""
         ctx = PermissionContext(mode=PermissionMode.ACCEPT_EDITS, is_interactive=False)
         assert await ctx.check("Bash", {}) is False
-        assert await ctx.check("WebFetch", {}) is False
+        assert await ctx.check("Agent", {}) is False
+
+    @pytest.mark.asyncio
+    async def test_non_interactive_allows_network_read_tools(self) -> None:
+        """Network read tools should not try to prompt in TUI/non-interactive contexts."""
+        ctx = PermissionContext(mode=PermissionMode.DEFAULT, is_interactive=False)
+        assert await ctx.check("WebSearch", {"query": "agent"}) is True
+        assert await ctx.check("WebFetch", {"url": "https://example.com"}) is True
 
     @pytest.mark.asyncio
     async def test_bypass_mode_overrides_non_interactive(self) -> None:
