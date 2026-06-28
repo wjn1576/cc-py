@@ -119,6 +119,9 @@ DASHSCOPE_MODELS = {"qwen3-max", "glm-5", "kimi-k2.5", "deepseek-v4-flash"}
 
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/apps/anthropic"
 
+# 默认使用百炼模型，避免无参启动时强制要求 ANTHROPIC_API_KEY。
+DEFAULT_MODEL = "qwen3-max"
+
 
 def is_dashscope_model(model: str) -> bool:
     """判断模型是否走阿里云百炼接口。"""
@@ -127,15 +130,15 @@ def is_dashscope_model(model: str) -> bool:
 
 # 可用模型列表（Anthropic 原生 + 阿里云百炼兼容）
 AVAILABLE_MODELS = [
-    # Anthropic
-    "claude-sonnet-4-20250514",
-    "claude-opus-4-20250514",
-    "claude-haiku-4-5-20251001",
-    # 阿里云百炼（需配置 ANTHROPIC_BASE_URL）
+    # 阿里云百炼
     "qwen3-max",
     "glm-5",
     "kimi-k2.5",
     "deepseek-v4-flash",
+    # Anthropic
+    "claude-sonnet-4-20250514",
+    "claude-opus-4-20250514",
+    "claude-haiku-4-5-20251001",
 ]
 
 

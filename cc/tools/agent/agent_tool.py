@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from cc.commands.registry import DEFAULT_MODEL
 from cc.core.events import TextDelta, TurnComplete
 from cc.models.messages import Message, UserMessage
 from cc.prompts.sections import DEFAULT_AGENT_PROMPT
@@ -43,7 +44,7 @@ class AgentTool(Tool):
         self,
         parent_registry: ToolRegistry,
         call_model_factory: Any,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = DEFAULT_MODEL,
         bg_manager: Any | None = None,  # BackgroundAgentManager
         cwd: str | None = None,
     ) -> None:

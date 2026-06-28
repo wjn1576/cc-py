@@ -11,9 +11,14 @@ Consumes QueryEvent stream and renders to terminal.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rich.console import Console
+from rich.align import Align
+from rich.console import Console, Group
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.table import Table
 from rich.text import Text
 
 if TYPE_CHECKING:
@@ -22,11 +27,20 @@ if TYPE_CHECKING:
 # 全局 Console 实例，所有渲染通过它输出到终端
 console = Console()
 
+APP_NAME = "cc-py"
+ACCENT = "#ff7a45"
+
 # 当前工作目录前缀，用于将绝对路径转为相对路径显示
 # 末尾加 os.sep 确保只匹配完整目录前缀（不误截 /Users/foo/bar-baz 中的 /Users/foo/bar）
 _cwd_prefix = os.getcwd() + os.sep
 # 用户 home 目录前缀，将 /Users/xxx/ 替换为 ~/，避免暴露用户名
 _home_prefix = os.path.expanduser("~") + os.sep
+
+
+def set_display_cwd(cwd: str) -> None:
+    """Update path-shortening prefixes when the CLI runs against another cwd."""
+    global _cwd_prefix
+    _cwd_prefix = str(Path(cwd).resolve()) + os.sep
 
 
 def _shorten_paths(text: str) -> str:
@@ -122,20 +136,85 @@ def render_event(event: QueryEvent) -> None:
         console.print(Text(f"Error: {_shorten_paths(event.message)}", style="bold red"))
 
 
-def print_welcome() -> None:
+def print_welcome(*, model: str | None = None, cwd: str | None = None) -> None:
     """Print the welcome banner."""
-    # 启动时显示版本信息和基本操作提示
+    # 启动时显示应用名、当前模型、工作目录和常用提示。
+    logo = Text(
+        "   ____ ____        \n"
+        "  / ___|  _ \\ _   _ \n"
+        " | |   | |_) | | | |\n"
+        " | |___|  __/| |_| |\n"
+        "  \\____|_|    \\__, |\n"
+        "              |___/ ",
+        style=f"bold {ACCENT}",
+    )
+
+    display_cwd = Path(cwd or os.getcwd()).name or _shorten_paths(cwd or os.getcwd())
+
+    left = Align.center(
+        Group(
+            Text("Welcome back!", style="bold"),
+            Text(""),
+            logo,
+            Text(""),
+            Text(model or "model: unknown", style="bold dim"),
+            Text(display_cwd, style="dim"),
+        ),
+        vertical="middle",
+    )
+
+    tips = Text()
+    tips.append("Tips for getting started\n", style=f"bold {ACCENT}")
+    tips.append("Run ")
+    tips.append("/help", style="bold")
+    tips.append(" for commands.\n")
+    tips.append("Run ")
+    tips.append("/model", style="bold")
+    tips.append(" to switch models.\n")
+    tips.append("Use ")
+    tips.append("/compact", style="bold")
+    tips.append(" for long chats.")
+
+    whats_new = Text()
+    whats_new.append("What's new\n", style=f"bold {ACCENT}")
+    whats_new.append("Default: DashScope ")
+    whats_new.append("qwen3-max", style="bold")
+    whats_new.append(".\n")
+    whats_new.append("Project name: ")
+    whats_new.append(APP_NAME, style="bold")
+    whats_new.append(".\n")
+    whats_new.append("Tools, hooks, memory, and teams enabled.")
+
+    right = Group(
+        tips,
+        Rule(style=ACCENT),
+        whats_new,
+    )
+
+    body = Table.grid(expand=True)
+    body.add_column(ratio=2)
+    body.add_column(width=3, justify="center")
+    body.add_column(ratio=3)
+    body.add_row(left, Text("\n".join("│" for _ in range(12)), style=ACCENT), right)
+
     console.print()
-    console.print(Text("cc-python-claude v0.1.0", style="bold blue"))
-    console.print(Text("Type your message, or /help for commands. Ctrl+C to interrupt, Ctrl+D to exit.", style="dim"))
+    console.print(
+        Panel(
+            body,
+            title=Text(f" {APP_NAME} ", style=f"bold {ACCENT}"),
+            title_align="left",
+            border_style=ACCENT,
+            padding=(0, 2),
+            expand=True,
+        )
+    )
     console.print()
 
 
 def print_prompt() -> str:
     """Display the input prompt and read user input."""
     try:
-        # 使用 Rich 的 markup 语法 [bold blue] 渲染蓝色粗体的提示符 ">"
-        return console.input("[bold blue]> [/]")
+        return console.input(f"[bold {ACCENT}]{APP_NAME}[/] [dim]>[/] ")
     except EOFError:
         # Ctrl+D 触发 EOFError，向上传播由调用方处理退出逻辑
         raise

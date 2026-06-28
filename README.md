@@ -92,6 +92,15 @@ conda activate cc-python-claude
 pip install -e .
 ```
 
+`pip install -e .` 只需要在这个 conda 环境里执行一次。安装后会注册 `cc` 命令，因此可以在任意目录启动：
+
+```powershell
+cd E:\your-project
+cc
+```
+
+此时 `cc-py` 的工作目录就是 `E:\your-project`，会优先读取该目录下的 `.env`、`CLAUDE.md`、`.mcp.json` 等项目配置。
+
 ### 使用 uv
 
 ```powershell
@@ -101,17 +110,7 @@ uv sync
 
 ## 配置模型
 
-### Claude
-
-```env
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-启动：
-
-```powershell
-python -m cc --model claude-sonnet-4-20250514
-```
+默认模型是 `qwen3-max`，走阿里云百炼的 Anthropic 兼容接口。也就是说，直接运行 `python -m cc` 时优先读取 `DASHSCOPE_API_KEY`。
 
 ### 阿里云百炼
 
@@ -124,8 +123,23 @@ DASHSCOPE_API_KEY=your-dashscope-api-key
 启动：
 
 ```powershell
+python -m cc
 python -m cc --model qwen3-max
 python -m cc --model deepseek-v4-flash
+```
+
+### Claude
+
+如果要切换到 Claude 模型，再配置 Anthropic key：
+
+```env
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+启动：
+
+```powershell
+python -m cc --model claude-sonnet-4-20250514
 ```
 
 也可以在 REPL 里用 `/model` 切换模型：
@@ -141,8 +155,15 @@ python -m cc --model deepseek-v4-flash
 # 交互模式
 python -m cc
 
-# 指定模型
+# 安装后可在任意目录直接启动
+cc
+
+# 默认使用百炼 qwen3-max，也可以指定其他百炼模型
 python -m cc --model qwen3-max
+python -m cc --model deepseek-v4-flash
+
+# 从其他位置指定工作目录启动
+cc --cwd E:\your-project
 
 # 单次输入模式
 echo "解释这个项目的架构" | python -m cc -p

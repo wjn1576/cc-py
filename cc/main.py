@@ -1,4 +1,4 @@
-"""CLI entry point for cc-python-claude.
+"""CLI entry point for cc-py.
 
 Corresponds to TS: main.tsx + entrypoints/cli.tsx.
 
@@ -46,6 +46,7 @@ import click
 # --- 内核层 ---
 from cc.api.claude import stream_response          # provider adapter: 把 Anthropic SDK 的流式事件转为内部 QueryEvent
 from cc.api.client import create_client             # Anthropic SDK 客户端工厂
+from cc.commands.registry import DEFAULT_MODEL
 from cc.core.events import QueryEvent, TurnComplete # 内核事件类型（query_loop 的产出物）
 from cc.core.query_engine import QueryEngine        # 运行时依赖容器，封装 main → query_loop 的中间层
 
@@ -68,7 +69,7 @@ from cc.tools.glob_tool.glob_tool import GlobTool
 from cc.tools.grep_tool.grep_tool import GrepTool
 
 # --- UI 层（与内核解耦，只消费事件流）---
-from cc.ui.renderer import console, render_event
+from cc.ui.renderer import ACCENT, APP_NAME, console, render_event, set_display_cwd
 
 logger = logging.getLogger(__name__)
 
@@ -204,22 +205,36 @@ async def _connect_mcp_servers(cwd: str, registry: ToolRegistry) -> None:
         await connect_mcp_server(config, registry)
 
 
-def _load_env() -> dict[str, str]:
-    """Load config from environment variables and project .env file.
+def _read_env_file(path: Path) -> dict[str, str]:
+    """Read simple KEY=VALUE pairs from an env file."""
+    values: dict[str, str] = {}
+    if not path.is_file():
+        return values
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if "=" in line and not line.startswith("#"):
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
 
-    Priority: environment variables > .env file.
+
+def _load_env(cwd: str | None = None) -> dict[str, str]:
+    """Load config from environment variables, package .env, and cwd .env.
+
+    Priority: environment variables > cwd .env > package .env.
     Supported keys: ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, DASHSCOPE_API_KEY.
     """
     result: dict[str, str] = {}
 
-    # Load from .env in project root first (lower priority)
-    env_file = Path(__file__).parent.parent / ".env"
-    if env_file.is_file():
-        for line in env_file.read_text().splitlines():
-            line = line.strip()
-            if "=" in line and not line.startswith("#"):
-                k, v = line.split("=", 1)
-                result[k.strip()] = v.strip()
+    # Package/source .env is a fallback for local development.
+    package_env = Path(__file__).parent.parent / ".env"
+    result.update(_read_env_file(package_env))
+
+    # The launched project directory wins over package defaults.
+    if cwd is not None:
+        cwd_env = Path(cwd) / ".env"
+        if cwd_env.resolve() != package_env.resolve():
+            result.update(_read_env_file(cwd_env))
 
     # Environment variables override .env
     for key in (
@@ -287,7 +302,7 @@ def _make_call_model_factory(client: object) -> object:
     能够透传到 QueryEngine.make_call_model()，而非直接使用这个基础版本。
     """
 
-    def factory(model: str = "claude-sonnet-4-20250514", max_tokens: int = 16384) -> object:
+    def factory(model: str = DEFAULT_MODEL, max_tokens: int = 16384) -> object:
         async def call_model(**kwargs: object) -> AsyncIterator[QueryEvent]:
             # query_loop 在 max_output_tokens 恢复时会传入 max_tokens=65536（ESCALATED_MAX_TOKENS）
             # 这里用 pop 取出来，如果 query_loop 没传就用构造时的默认值
@@ -516,7 +531,7 @@ def _read_multiline_input() -> str:
     """
     lines: list[str] = []
     try:
-        first_line = console.input("[bold blue]> [/]")
+        first_line = console.input(f"[bold {ACCENT}]{APP_NAME}[/] [dim]>[/] ")
     except EOFError:
         raise
     except KeyboardInterrupt:
@@ -527,7 +542,7 @@ def _read_multiline_input() -> str:
 
     while _needs_continuation(lines):
         try:
-            next_line = console.input("[dim]... [/]")
+            next_line = console.input("[dim]...[/] ")
             lines.append(next_line)
         except (EOFError, KeyboardInterrupt):
             break
@@ -552,7 +567,7 @@ def _needs_continuation(lines: list[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
-async def _run_print_mode(prompt: str, model: str) -> None:
+async def _run_print_mode(prompt: str, model: str, cwd: str) -> None:
     """Non-interactive mode: single prompt -> output -> exit.
 
     P0.5a: Uses QueryEngine to encapsulate runtime dependencies.
@@ -562,11 +577,10 @@ async def _run_print_mode(prompt: str, model: str) -> None:
     不需要 session 持久化、memory extraction、resume 等 REPL 专属逻辑。
     engine.submit() 内部创建 transcript [UserMessage(prompt)]，然后直接跑 query_loop。
     """
-    env = _load_env()
+    env = _load_env(cwd)
     client = _create_client_for_model(model, env)
     if client is None:
         sys.exit(1)
-    cwd = str(Path.cwd())
 
     engine = _build_engine(client, model, cwd, is_interactive=False)
 
@@ -582,7 +596,7 @@ async def _run_print_mode(prompt: str, model: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _run_repl(model: str, resume_id: str | None = None) -> None:
+async def _run_repl(model: str, cwd: str, resume_id: str | None = None) -> None:
     """Interactive REPL mode.
 
     P0.5a: Uses QueryEngine for runtime wiring.
@@ -611,11 +625,10 @@ async def _run_repl(model: str, resume_id: str | None = None) -> None:
     【退出】
       - 用户输入 EOF（Ctrl+D）时退出
     """
-    env = _load_env()
+    env = _load_env(cwd)
     client = _create_client_for_model(model, env)
     if client is None:
         sys.exit(1)
-    cwd = str(Path.cwd())
 
     engine = _build_engine(client, model, cwd)
 
@@ -679,7 +692,7 @@ async def _run_repl(model: str, resume_id: str | None = None) -> None:
 
     from cc.ui.renderer import print_welcome
 
-    print_welcome()
+    print_welcome(model=engine.model, cwd=cwd)
     session_id = resume_id or str(uuid4())[:8]
     claude_md = load_claude_md(cwd)
 
@@ -691,7 +704,7 @@ async def _run_repl(model: str, resume_id: str | None = None) -> None:
         try:
             user_input = _read_multiline_input()
         except EOFError:
-            console.print("\nBye!")
+            console.print("\n[dim]Bye.[/]")
             break
 
         if not user_input.strip():
@@ -738,7 +751,7 @@ async def _run_repl(model: str, resume_id: str | None = None) -> None:
                 continue
             elif isinstance(result, str) and result.startswith("__MODEL__"):
                 new_model = result[len("__MODEL__"):]
-                env = _load_env()
+                env = _load_env(cwd)
                 new_client = _create_client_for_model(new_model, env)
                 if new_client is None:
                     continue
@@ -847,18 +860,26 @@ async def _run_repl(model: str, resume_id: str | None = None) -> None:
 
 @click.command()
 @click.option("-p", "--print", "print_mode", is_flag=True, help="Non-interactive mode")
-@click.option("--model", default="claude-sonnet-4-20250514", help="Model to use")
+@click.option("--model", default=DEFAULT_MODEL, show_default=True, help="Model to use")
 @click.option("--verbose", is_flag=True, help="Verbose output")
 @click.option("-c", "--resume", "resume_id", default=None, help="Resume session by ID")
+@click.option(
+    "--cwd",
+    "cwd_option",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    help="Working directory for tools, memory, .env, CLAUDE.md, and MCP config",
+)
 @click.argument("prompt", required=False)
 def main(
     print_mode: bool,
     model: str,
     verbose: bool,
     resume_id: str | None,
+    cwd_option: Path | None,
     prompt: str | None,
 ) -> None:
-    """cc-python-claude -- Python reimplementation of Claude Code CLI.
+    """cc-py -- Claude Code architecture learning CLI in Python.
 
     两种运行模式：
       1. print mode (-p): echo "prompt" | python -m cc -p → 单次输出后退出
@@ -867,15 +888,19 @@ def main(
     if verbose:
         logging.basicConfig(level=logging.DEBUG)
 
+    cwd = (cwd_option or Path.cwd()).expanduser().resolve()
+    os.chdir(cwd)
+    set_display_cwd(str(cwd))
+
     if print_mode:
         if not prompt:
             prompt = sys.stdin.read().strip()
         if not prompt:
             console.print("[red]Error: No prompt provided.[/]")
             sys.exit(1)
-        asyncio.run(_run_print_mode(prompt, model))
+        asyncio.run(_run_print_mode(prompt, model, str(cwd)))
     else:
-        asyncio.run(_run_repl(model, resume_id=resume_id))
+        asyncio.run(_run_repl(model, str(cwd), resume_id=resume_id))
 
 
 if __name__ == "__main__":

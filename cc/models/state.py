@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from cc.commands.registry import DEFAULT_MODEL
+
 if TYPE_CHECKING:
     # 仅在类型检查时导入 Message，避免循环依赖
     from .messages import Message
@@ -89,7 +91,7 @@ class AppConfig:
     # Anthropic API 密钥，为 None 时从环境变量读取
     api_key: str | None = None
     # 使用的模型名称
-    model: str = "claude-sonnet-4-20250514"
+    model: str = DEFAULT_MODEL
     # 单次响应的最大输出 token 数
     max_tokens: int = 16384
 
